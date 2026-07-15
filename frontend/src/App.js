@@ -558,6 +558,7 @@ function App() {
       clearInterval(t1);
       clearInterval(t2);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Track active job details

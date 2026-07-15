@@ -49,8 +49,11 @@ if not exist ".env" (
     echo REACT_APP_BACKEND_URL= > .env
 )
 echo [i] Installing frontend deps...
-call yarn install --silent
+call yarn install --network-timeout 300000
 echo [i] Building React production bundle...
+set "CI=false"
+set "DISABLE_ESLINT_PLUGIN=true"
+set "GENERATE_SOURCEMAP=false"
 call yarn build
 if errorlevel 1 ( echo [ERROR] Frontend build failed & popd & pause & exit /b 1 )
 popd

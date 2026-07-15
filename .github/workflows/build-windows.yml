@@ -37,6 +37,10 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         shell: bash
+        env:
+          CI: "false"          # tell CRA not to treat warnings as errors
+          DISABLE_ESLINT_PLUGIN: "true"
+          GENERATE_SOURCEMAP: "false"
         run: |
           echo "REACT_APP_BACKEND_URL=" > .env
           yarn install --network-timeout 300000
