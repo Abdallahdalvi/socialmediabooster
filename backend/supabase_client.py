@@ -75,7 +75,13 @@ class SupabaseREST:
         return r.json()
 
     async def get_one(self, table: str, match: Dict[str, Any], columns: str = "*") -> Optional[Dict[str, Any]]:
-        rows = await self.select(table, match=match, limit=1, columns=columns)
+        try:
+            rows = await self.select(table, match=match, limit=1, columns=columns)
+        except httpx.HTTPStatusError as e:
+            # invalid uuid / bad filter → treat as "not found"
+            if e.response.status_code in (400, 404):
+                return None
+            raise
         return rows[0] if rows else None
 
     async def delete(self, table: str, match: Dict[str, Any]) -> None:
