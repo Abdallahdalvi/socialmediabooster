@@ -82,6 +82,7 @@ const JobForm = ({ countries, onCreated }) => {
   const [watchSec, setWatchSec] = useState(8);
   const [mode, setMode] = useState("random");
   const [selectedCountries, setSelectedCountries] = useState(["us", "gb", "de"]);
+  const [browserMode, setBrowserMode] = useState("playwright");
   const [submitting, setSubmitting] = useState(false);
 
   const toggleCountry = (code) => {
@@ -103,6 +104,7 @@ const JobForm = ({ countries, onCreated }) => {
         watch_seconds: parseInt(watchSec) || 5,
         location_mode: mode,
         countries: mode === "specific" ? selectedCountries : [],
+        browser_mode: browserMode,
       });
       onCreated(res.data);
       setUrls("");
@@ -212,6 +214,31 @@ const JobForm = ({ countries, onCreated }) => {
           </div>
         </div>
       )}
+
+      <div className="mt-5">
+        <label className="block text-xs font-mono uppercase text-zinc-500 mb-2 tracking-widest">
+          Browser Engine
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { v: "playwright", l: "Playwright (real Chromium)" },
+            { v: "http", l: "HTTP (fast fallback)" },
+          ].map((opt) => (
+            <button
+              data-testid={`browser-mode-${opt.v}`}
+              key={opt.v}
+              onClick={() => setBrowserMode(opt.v)}
+              className={`px-3 py-2 border font-mono text-xs uppercase tracking-wider transition-colors ${
+                browserMode === opt.v
+                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                  : "border-zinc-800 bg-black text-zinc-500 hover:border-zinc-600"
+              }`}
+            >
+              {opt.l}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <button
         data-testid="start-job-btn"
@@ -373,7 +400,7 @@ const EduSection = () => (
         <p className="text-zinc-400 text-sm leading-relaxed">
           A view is counted when a viewer intentionally initiates the playing of a
           video and watches for a meaningful duration. View counts influence
-          discoverability, ranking, and recommendation weight inside YouTube's
+          discoverability, ranking, and recommendation weight inside YouTube&apos;s
           algorithmic surfaces.
         </p>
       </div>
@@ -429,7 +456,7 @@ const EduSection = () => (
           This tool is provided <span className="text-emerald-300">strictly for
           educational and research purposes</span> — to study Tor circuit rotation,
           browser fingerprinting, and traffic distribution. Using automated tooling to
-          inflate YouTube view counts violates YouTube's Terms of Service and can lead
+          inflate YouTube view counts violates YouTube&apos;s Terms of Service and can lead
           to permanent channel termination or worse.
         </p>
         <p className="mt-3 text-zinc-500 text-xs font-mono">
@@ -488,7 +515,6 @@ function App() {
       clearInterval(t1);
       clearInterval(t2);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Track active job details
@@ -507,7 +533,9 @@ function App() {
       try {
         const data = JSON.parse(msg.data);
         setLogs((prev) => [...prev.slice(-300), data]);
-      } catch {}
+      } catch {
+        /* ignore malformed events */
+      }
     };
     es.onerror = () => {
       es.close();

@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 2 (Supabase + Playwright/HTTP + SSE persistence) end-to-end verified. All 10 pytest backend cases pass (100%). Frontend loads with all 17 required data-testids; HTTP-mode job creation works and streams SSE events; Force Rotate Now flips global-tor-ip (185.220.101.106 → 23.128.248.170). Rotation test job (4 views, specific us/de) completed with unique_ips>=2 and countries_covered>=2, proving Supabase persistence + rotation orchestration.",
+  "tested_scope": ["frontend", "backend", "integration"],
+  "passed": [
+    "GET /api/health → {api:ok, supabase:ok}",
+    "GET /api/ → storage=supabase, browser_mode=playwright, rotation_interval=3",
+    "GET /api/tor/status → valid exit IP + country",
+    "POST /api/tor/rotate → new IP after rotation",
+    "GET /api/countries → 18 countries (>=15)",
+    "POST /api/jobs (browser_mode=http, 1 URL, 2 views) → persisted (in GET /api/jobs and GET /api/jobs/{id}), completes ~50-60s, populates current_ip, unique_ips, countries_covered",
+    "POST /api/jobs (views_per_video=4, specific, [us,de]) → completed, unique_ips>=2, countries_covered>=2 (rotation at video 4 verified)",
+    "GET /api/jobs/{id}/logs → returns >=5 persisted log rows (Supabase yt_job_logs)",
+    "GET /api/jobs/{id}/stream (SSE) → replays historical logs then keeps connection alive with keep-alives",
+    "GET /api/stats → total_jobs, unique_ips, countries populated",
+    "POST /api/jobs with empty video_urls → 400",
+    "GET /api/jobs/{missing-uuid} → 404 (using valid UUID format)",
+    "Frontend loads, hero rendered, all 17 data-testids present (video-urls-input, views-per-video-input, watch-seconds-input, location-mode-random/specific/auto, browser-mode-playwright/http, start-job-btn, stat-total-views, stat-unique-ips, stat-countries, stat-jobs, current-ip, current-country, manual-rotate-btn, global-tor-ip)",
+    "Clicking browser-mode-http + launching a job creates it (visible in Job History) and LiveJobPanel streams [i] Job started + [TOR] rotating events immediately",
+    "Force Rotate Now button flips global-tor-ip from 185.220.101.106 → 23.128.248.170"
+  ],
+  "failed": [],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/jobs/{non-uuid-string}", "issue": "Returns 500 (from Supabase raising on invalid UUID cast) instead of 400/404. Only affects malformed IDs; well-formed missing UUIDs correctly return 404. Test uses valid UUID format to avoid this. Backend could catch httpx.HTTPStatusError in get_one and return None for 400/404."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(low priority) Harden supabase_client.get_one to return None on 400 (invalid uuid) so GET /api/jobs/<garbage-string> returns 404 instead of 500."
+  ],
+  "critical_code_review_comments": [
+    "backend/server.py is ~480 lines — approaching split threshold. Consider extracting run_job() and Broadcaster into modules if it grows further.",
+    "tor_get_exit_ip via SOCKS ipify.org can hang up to 25s on a slow Tor circuit — this bottlenecks each rotation. Could reduce timeout to 10-12s and fall back to icanhazip/checkip.amazonaws.com if the first attempt fails.",
+    "asyncio.create_task(sb.insert(...)) inside Broadcaster.publish() has no exception handler / retry — persisted log rows may be silently dropped if Supabase 5xxs during a burst.",
+    "run_job() computes 'next_rot' before the current iteration's visit, but the LiveJobPanel already recomputes it client-side — could rely on the SSE stream field instead to guarantee consistency.",
+    "supabase_client uses a single AsyncClient built lazily; multiple concurrent event loops could race on _get_client(). Not an issue with a single FastAPI process but worth a comment."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (created)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Created 2 test jobs during test run (one 2-view http job, one 4-view specific us/de http job) — inserted into Supabase yt_jobs + yt_job_logs.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "pytest.ini forces -n 2 --dist loadscope. Because Tor rotation is global process state, TestTor and TestJobsHttpMode contend when run in parallel (a rotation from one test steals the exit IP of the other). Run the job tests with `pytest -n 0` for deterministic results, or keep all Tor/job tests in a single test class so loadscope pins them to one worker (that's what the current file does). Full serial run: `python -m pytest backend/tests/backend_test.py -n 0` completes in ~80s and passes 10/10.",
+  "rca of the issue": "N/A — no unresolved bugs. Initial parallel-run failures were due to two Tor-touching tests running concurrently on different xdist workers; switching to serial (-n 0) or grouping in one class fixes it. The 500-on-invalid-UUID is a minor error-handling gap in supabase_client.get_one — captured in action_items."
+}
