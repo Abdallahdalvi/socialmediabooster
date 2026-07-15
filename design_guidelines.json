@@ -1,0 +1,84 @@
+{
+  "theme": "dark",
+  "typography": {
+    "headings": {
+      "family": "JetBrains Mono, monospace",
+      "weights": ["400", "700"],
+      "usage": "H1-H4, stats numbers, labels, terminal output, navigation"
+    },
+    "body": {
+      "family": "IBM Plex Sans, sans-serif",
+      "weights": ["400", "500", "600"],
+      "usage": "Paragraphs, tooltips, standard body text"
+    }
+  },
+  "colors": {
+    "primary": "#22C55E",
+    "primary_hover": "#16A34A",
+    "background": "#050505",
+    "surface": "#0A0A0A",
+    "surface_elevated": "#121212",
+    "border": "#27272A",
+    "text_main": "#F4F4F5",
+    "text_muted": "#A1A1AA",
+    "accent_neon": "#00FF41",
+    "warning": "#EAB308",
+    "error": "#EF4444"
+  },
+  "visual_enhancers": {
+    "surfaces": "Retro-Futurism / Terminal Look. Solid dark backgrounds with crisp 1px borders. No soft shadows. Use subtle glowing green text-shadows or box-shadows on active states.",
+    "borders": "1px solid #27272A. Active/focus inputs get 1px solid #22C55E.",
+    "effects": "Terminal logs should have a black background with green text. Use a subtle repeating linear gradient (scanlines) if possible."
+  },
+  "grids_layouts": {
+    "main_container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+    "dashboard_grid": "grid grid-cols-1 md:grid-cols-4 gap-6",
+    "bento_grid": "For stats cards: col-span-1. For Job History/Terminal: col-span-3 or col-span-4.",
+    "spacing_philosophy": "Compact in dashboard data views (gap-4, p-4), highly generous in landing/educational areas (py-24, gap-12)."
+  },
+  "components": {
+    "buttons": "Sharp corners (rounded-none or rounded-sm). Primary button uses #22C55E background with black text. Hover state brightens.",
+    "inputs": "Dark background (#000000), 1px zinc border, focus green ring. Use Shadcn components but strip soft rounding.",
+    "cards": "border border-zinc-800 bg-[#0A0A0A] p-6. No drop shadow, completely flat.",
+    "terminal_log": "Black box, JetBrains Mono green text, overflow-y-auto, glowing borders."
+  },
+  "motion": {
+    "hover": "Instant color changes or rapid transitions. Avoid slow/soft transitions for the tech vibe.",
+    "entrance": "Staggered fade in for dashboard widgets (framer-motion).",
+    "terminal": "Simulate typing or instant appending for the real-time logs."
+  },
+  "media": {
+    "icons": "lucide-react (Technical icons like Terminal, Activity, Globe, Shield, Cpu)",
+    "image_urls": {
+      "landing_hero": "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHwxfHxoYWNrZXIlMjB0ZXJtaW5hbCUyMGNvZGV8ZW58MHx8fHwxNzg0MDk4OTI0fDA&ixlib=rb-4.1.0&q=85",
+      "data_center": "https://images.unsplash.com/photo-1762163516269-3c143e04175c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwxfHxzZXJ2ZXIlMjByYWNrJTIwZGF0YSUyMGNlbnRlcnxlbnwwfHx8fDE3ODQwOTg5MjR8MA&ixlib=rb-4.1.0&q=85",
+      "terminal_setup": "https://images.unsplash.com/photo-1516259762381-22954d7d3ad2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHw0fHxoYWNrZXIlMjB0ZXJtaW5hbCUyMGNvZGV8ZW58MHx8fHwxNzg0MDk4OTI0fDA&ixlib=rb-4.1.0&q=85"
+    }
+  },
+  "accessibility": {
+    "contrast": "Ensure green on black passes APCA/WCAG. Avoid pure white text on pure black to reduce eye strain; use #F4F4F5 instead.",
+    "focus": "focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-black",
+    "data_testid": "Add data-testid attributes to all interactive elements."
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: You are working with .js files, NOT .tsx files. Write all React code as JSX (.js or .jsx extension).",
+    "Build a hybrid app: Landing area at the top with an Educational Disclaimer, followed by the main YouTube Booster dashboard tool, and educational sections at the bottom.",
+    "Use Shadcn UI components extensively for complex forms (duration inputs, location selectors), but adapt them to .js and strip out Vercel-like rounded borders to match the Terminal vibe.",
+    "Location Selector must allow: 'Random Worldwide', 'Auto-match audience', or 'Specific list' via Select/Dropdown.",
+    "Dashboard must include a 'Live Job Status' widget showing current IP address, Tor node status (country flag), and video progress (rotates every 3 videos).",
+    "Log stream must visually mimic a terminal: monospace green text on black bg, auto-scrolling.",
+    "Do not use generic gray borders everywhere. Use #27272A and ensure high contrast.",
+    "Include data-testid on every button, input, and interactive UI piece.",
+    "Use JetBrains Mono for headings and numeric stats, IBM Plex Sans for body text.",
+    "Ensure Tor rotation feature is clearly visualized in the UI (e.g. 'Next IP rotation in: X videos')."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not use completely transparent backgrounds over images; use solid dark overlays.",
+    "Avoid the generic 'Vercel look' (white/gray soft cards). Stick to the Terminal/Tech aesthetic.",
+    "No generic centered alignments for main dashboard content. Left-align data for readability.",
+    "Create depth through border colors and subtle text glows instead of box-shadows.",
+    "All interactive elements must have clear hover states.",
+    "For toasts, use Sonner if needed, styled dark to match.",
+    "Ensure all code generated is in JS/JSX, not TypeScript."
+  ]
+}
