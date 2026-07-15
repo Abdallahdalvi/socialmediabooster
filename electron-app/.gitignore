@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.exe
+*.msi
+*.dmg
+.DS_Store
+out/
+build/
