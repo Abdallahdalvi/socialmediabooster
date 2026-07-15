@@ -27,6 +27,7 @@ jobs:
 
       - name: Install Python deps
         working-directory: backend
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -38,7 +39,7 @@ jobs:
         shell: bash
         run: |
           echo "REACT_APP_BACKEND_URL=" > .env
-          yarn install --frozen-lockfile
+          yarn install --network-timeout 300000
           yarn build
 
       - name: Copy frontend build into backend
@@ -46,29 +47,64 @@ jobs:
         run: |
           rm -rf backend/static
           cp -r frontend/build backend/static
+          ls backend/static | head
 
       - name: Build EXE with PyInstaller
         working-directory: backend
+        shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --onefile --name yt_booster `
             --add-data "static;static" `
-            --hidden-import "aiosqlite" `
-            --hidden-import "stem" `
-            --hidden-import "stem.control" `
-            --hidden-import "playwright.async_api" `
-            --collect-all "playwright" `
+            --hidden-import aiosqlite `
+            --hidden-import stem `
+            --hidden-import stem.control `
+            --hidden-import playwright `
+            --hidden-import playwright.async_api `
+            --hidden-import websockets `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops.asyncio `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols.http.h11_impl `
+            --hidden-import uvicorn.protocols.websockets.wsproto_impl `
+            --collect-data playwright `
             server.py
 
       - name: Download Tor Expert Bundle
-        shell: powershell
+        shell: pwsh
         run: |
-          $url = "https://archive.torproject.org/tor-package-archive/torbrowser/13.5.7/tor-expert-bundle-windows-x86_64-13.5.7.tar.gz"
-          Invoke-WebRequest -Uri $url -OutFile tor.tgz
+          # Fetch the latest Tor Expert Bundle version dynamically
+          $tor_version = "14.0.5"
+          $urls = @(
+            "https://archive.torproject.org/tor-package-archive/torbrowser/$tor_version/tor-expert-bundle-windows-x86_64-$tor_version.tar.gz",
+            "https://dist.torproject.org/torbrowser/$tor_version/tor-expert-bundle-windows-x86_64-$tor_version.tar.gz"
+          )
+          $downloaded = $false
+          foreach ($u in $urls) {
+            try {
+              Write-Host "Trying $u"
+              Invoke-WebRequest -Uri $u -OutFile tor.tgz -TimeoutSec 120
+              $downloaded = $true
+              break
+            } catch {
+              Write-Host "Failed: $($_.Exception.Message)"
+            }
+          }
+          if (-not $downloaded) {
+            Write-Error "Could not download Tor Expert Bundle from any mirror."
+            exit 1
+          }
           New-Item -ItemType Directory -Force -Path tor | Out-Null
           tar -xzf tor.tgz -C tor
+          # Tor Expert Bundle 14.x extracts into tor\tor\ — flatten it
           if (Test-Path "tor\tor\tor.exe") {
-              Move-Item tor\tor\* tor\
-              Remove-Item tor\tor -Recurse -Force
+            Get-ChildItem -Path "tor\tor" | Move-Item -Destination "tor\" -Force
+            Remove-Item "tor\tor" -Recurse -Force
+          }
+          if (-not (Test-Path "tor\tor.exe")) {
+            Write-Host "Files under tor\ after extraction:"
+            Get-ChildItem tor -Recurse | Select-Object FullName | Format-Table -AutoSize
+            Write-Error "tor.exe not found after extraction."
+            exit 1
           }
           @"
           SocksPort 9050
@@ -80,7 +116,7 @@ jobs:
           "@ | Out-File -Encoding ASCII tor\torrc
 
       - name: Assemble portable release folder
-        shell: powershell
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release\yt-views-booster | Out-Null
           Copy-Item backend\dist\yt_booster.exe release\yt-views-booster\
@@ -98,12 +134,14 @@ jobs:
           start "" cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:8001"
           yt_booster.exe
           "@ | Out-File -Encoding ASCII release\yt-views-booster\Start.bat
-          Copy-Item README.md release\yt-views-booster\ -ErrorAction SilentlyContinue
+          if (Test-Path README.md) { Copy-Item README.md release\yt-views-booster\ }
+          if (Test-Path WINDOWS_EXE.md) { Copy-Item WINDOWS_EXE.md release\yt-views-booster\ }
 
       - name: Zip release
-        shell: powershell
+        shell: pwsh
         run: |
-          Compress-Archive -Path release\yt-views-booster\* -DestinationPath yt-views-booster-windows.zip
+          Compress-Archive -Path release\yt-views-booster\* -DestinationPath yt-views-booster-windows.zip -Force
+          Get-Item yt-views-booster-windows.zip | Select-Object Name, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
