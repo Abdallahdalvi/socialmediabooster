@@ -1,0 +1,52 @@
+{
+  "name": "ytviews-booster",
+  "version": "2.0.0",
+  "description": "YouTube Views Booster - Native Windows Application",
+  "main": "main.js",
+  "homepage": "./",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "dev": "electron . --debug"
+  },
+  "author": "Abdallah Dalvi",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^latest",
+    "electron-builder": "^latest"
+  },
+  "build": {
+    "appId": "com.ytbooster.app",
+    "productName": "YT Views Booster",
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/**/*",
+      "../frontend/build/**/*",
+      "../backend/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
