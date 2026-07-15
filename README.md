@@ -4,6 +4,18 @@ Educational/research tool that simulates distributed YouTube traffic and rotates
 
 > ⚠️ **For testing and educational purposes only.** Automated view inflation violates YouTube's ToS.
 
+## 🚀 Just want the app running on Windows?
+
+**Read [`WINDOWS_EXE.md`](./WINDOWS_EXE.md)** — three ways to get it running, from "download the pre-built ZIP" to "one command to build it yourself".
+
+TL;DR:
+```powershell
+git clone https://github.com/Abdallahdalvi/socialmediabooster.git
+cd socialmediabooster
+windows\install.bat      # one-time
+windows\start.bat        # double-click any time to launch
+```
+
 ## What's inside
 
 | Component | Local? | Notes |

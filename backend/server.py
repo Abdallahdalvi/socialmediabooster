@@ -1,5 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
@@ -494,6 +495,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---- Serve the built React app in "standalone" mode ----
+# When packaged as a single executable (PyInstaller) or run via start.bat,
+# the frontend is a static build sitting next to server.py.
+_FRONTEND_CANDIDATES = [
+    ROOT_DIR / "static",                   # copied build (used by PyInstaller)
+    ROOT_DIR.parent / "frontend" / "build" # dev / launcher.bat convention
+]
+_FRONTEND_ROOT = next((p for p in _FRONTEND_CANDIDATES if (p / "index.html").exists()), None)
+
+if _FRONTEND_ROOT is not None:
+    logger.info(f"Serving static frontend from {_FRONTEND_ROOT}")
+
+    # Mount hashed asset dir first so /static/* CSS + JS resolve
+    _ASSETS = _FRONTEND_ROOT / "static"
+    if _ASSETS.exists():
+        app.mount("/static", StaticFiles(directory=str(_ASSETS)), name="frontend-static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        # never intercept the API
+        if full_path.startswith("api"):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = _FRONTEND_ROOT / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_FRONTEND_ROOT / "index.html"))
+else:
+    logger.info("No frontend build found — API only mode.")
 
 @app.on_event("startup")
 async def _startup():
