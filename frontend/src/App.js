@@ -76,10 +76,19 @@ const LogLine = ({ evt }) => {
 };
 
 // ---------- Job Submission Form ----------
+const DURATION_OPTIONS = [
+  { v: "short",  l: "Short",   r: "30 – 60 s"    },
+  { v: "medium", l: "Medium",  r: "90 – 180 s"   },
+  { v: "long",   l: "Long",    r: "240 – 420 s"  },
+  { v: "xlong",  l: "X-Long",  r: "460 – 800 s"  },
+  { v: "custom", l: "Custom",  r: "fixed"        },
+];
+
 const JobForm = ({ countries, onCreated }) => {
   const [urls, setUrls] = useState("");
   const [views, setViews] = useState(6);
   const [watchSec, setWatchSec] = useState(8);
+  const [durationPreset, setDurationPreset] = useState("medium");
   const [mode, setMode] = useState("random");
   const [selectedCountries, setSelectedCountries] = useState(["us", "gb", "de"]);
   const [browserMode, setBrowserMode] = useState("playwright");
@@ -102,6 +111,7 @@ const JobForm = ({ countries, onCreated }) => {
         video_urls: list,
         views_per_video: parseInt(views) || 1,
         watch_seconds: parseInt(watchSec) || 5,
+        duration_preset: durationPreset,
         location_mode: mode,
         countries: mode === "specific" ? selectedCountries : [],
         browser_mode: browserMode,
@@ -151,18 +161,51 @@ const JobForm = ({ countries, onCreated }) => {
         </div>
         <div>
           <label className="block text-xs font-mono uppercase text-zinc-500 mb-2 tracking-widest">
-            Watch seconds
+            Watch (custom)
           </label>
           <input
             data-testid="watch-seconds-input"
             type="number"
             min={3}
-            max={60}
+            max={1200}
             value={watchSec}
             onChange={(e) => setWatchSec(e.target.value)}
-            className="w-full bg-black border border-zinc-800 focus:border-emerald-500 outline-none px-3 py-2 font-mono text-sm rounded-none"
+            disabled={durationPreset !== "custom"}
+            className={`w-full bg-black border outline-none px-3 py-2 font-mono text-sm rounded-none ${
+              durationPreset === "custom"
+                ? "border-zinc-800 focus:border-emerald-500 text-zinc-100"
+                : "border-zinc-900 text-zinc-600"
+            }`}
           />
         </div>
+      </div>
+
+      <div className="mt-5">
+        <label className="block text-xs font-mono uppercase text-zinc-500 mb-2 tracking-widest">
+          Watch Duration
+        </label>
+        <div className="grid grid-cols-5 gap-1.5">
+          {DURATION_OPTIONS.map((opt) => (
+            <button
+              key={opt.v}
+              data-testid={`duration-preset-${opt.v}`}
+              onClick={() => setDurationPreset(opt.v)}
+              className={`px-2 py-2 border font-mono text-[10px] uppercase tracking-wider transition-colors text-left ${
+                durationPreset === opt.v
+                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                  : "border-zinc-800 bg-black text-zinc-500 hover:border-zinc-600"
+              }`}
+            >
+              <div className="text-[11px]">{opt.l}</div>
+              <div className="text-[9px] opacity-70">{opt.r}</div>
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] font-mono text-zinc-600 mt-1">
+          {durationPreset !== "custom"
+            ? "Each video watches a randomised duration in the selected range."
+            : "All videos watch the exact 'Watch (custom)' seconds above."}
+        </p>
       </div>
 
       <div className="mt-5">

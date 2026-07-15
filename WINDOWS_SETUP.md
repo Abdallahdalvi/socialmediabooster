@@ -1,26 +1,26 @@
-# Windows Development Setup
+# Windows Development / Standalone Setup
 
-This guide sets up the YT Views Booster stack (backend + frontend + Tor + Playwright) on **Windows 10/11 for local development**. The production deployment continues to run on the Linux container.
+This app is **fully self-contained** — no cloud databases, no paid APIs, just local processes. Runs great on Windows 10/11 for personal use.
 
 ---
 
 ## 1. Prerequisites
 
-| Tool | Version | Install command |
+| Tool | Version | Where |
 |---|---|---|
-| Python | 3.11+ | https://www.python.org/downloads/windows/ (check "Add to PATH") |
+| Python | 3.11+ | https://www.python.org/downloads/windows/ (tick "Add to PATH") |
 | Node.js | 20+ | https://nodejs.org/ |
 | Yarn | 1.22+ | `npm i -g yarn` |
 | Git | Any | https://git-scm.com/download/win |
-| Tor Expert Bundle | Latest | https://www.torproject.org/download/tor/ (**"Tor Expert Bundle"**, not the Browser) |
+| Tor Expert Bundle | Latest | https://www.torproject.org/download/tor/ (**"Tor Expert Bundle"** — NOT the Browser) |
 
 ---
 
-## 2. Install and configure Tor on Windows
+## 2. Install and configure Tor
 
-1. Download the **Tor Expert Bundle for Windows x86_64**.
-2. Extract to `C:\tor\` — you should have `C:\tor\tor\tor.exe`.
-3. Create `C:\tor\torrc` with the following content:
+1. Download **Tor Expert Bundle for Windows x86_64**.
+2. Extract to `C:\tor\` — verify `C:\tor\tor\tor.exe` exists.
+3. Create `C:\tor\torrc`:
 
 ```conf
 SocksPort 9050
@@ -32,13 +32,13 @@ Log notice file C:\tor\notice.log
 ExitPolicy reject *:*
 ```
 
-4. Start Tor as a background process (run in an admin PowerShell that stays open, or install it as a service):
+4. Start Tor (keep this PowerShell window open, or install as a service — see below):
 
 ```powershell
 C:\tor\tor\tor.exe -f C:\tor\torrc
 ```
 
-5. Verify Tor is running:
+5. Verify (in another shell):
 
 ```powershell
 curl.exe --socks5-hostname 127.0.0.1:9050 https://api.ipify.org
@@ -46,11 +46,13 @@ curl.exe --socks5-hostname 127.0.0.1:9050 https://api.ipify.org
 
 You should see a Tor exit IP.
 
-> **Optional (run Tor as a Windows service):** Use [NSSM](https://nssm.cc/) — `nssm install tor "C:\tor\tor\tor.exe" -f C:\tor\torrc`.
+### Optional: install Tor as a Windows service (survives reboots)
 
-### Cookie auth path on Windows
-
-The Python `stem` library expects the control cookie to be readable. On Windows it will be at `C:\tor\data\control_auth_cookie`. The backend `Controller.from_port` code path used here works cross-platform.
+```powershell
+# 1) Install NSSM: https://nssm.cc/download
+nssm install tor "C:\tor\tor\tor.exe" -f C:\tor\torrc
+nssm start tor
+```
 
 ---
 
@@ -59,15 +61,12 @@ The Python `stem` library expects the control cookie to be readable. On Windows 
 ```powershell
 cd C:\path\to\socialmediabooster\backend
 
-# Create a virtualenv
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Dependencies
 pip install -r requirements.txt
-pip install stem httpx pysocks "requests[socks]" playwright
+pip install stem aiosqlite pysocks "requests[socks]" playwright
 
-# Playwright browsers
 playwright install chromium
 ```
 
@@ -75,19 +74,15 @@ Create `backend\.env`:
 
 ```
 CORS_ORIGINS=*
-SUPABASE_URL=https://supabase.dalvi.cloud
-SUPABASE_SERVICE_KEY=<your service_role key>
 BROWSER_MODE=playwright
 TOR_SOCKS=socks5://127.0.0.1:9050
 TOR_CONTROL_PORT=9051
 ROTATION_INTERVAL=3
 LOG_RETENTION_DAYS=7
-# The Mongo variables are unused on Windows but kept for parity
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=test_database
+SQLITE_PATH=.\data\yt_booster.db
 ```
 
-Run the backend:
+Run:
 
 ```powershell
 uvicorn server:app --host 0.0.0.0 --port 8001 --reload
@@ -99,7 +94,9 @@ Verify:
 curl.exe http://localhost:8001/api/health
 ```
 
-Expected: `{"api":"ok","supabase":"ok"}`
+Expected: `{"api":"ok","db":"ok","storage":"sqlite"}`
+
+The SQLite database file is created automatically at `backend\data\yt_booster.db` on first run.
 
 ---
 
@@ -127,35 +124,52 @@ Open http://localhost:3000
 
 ---
 
-## 5. Common Windows gotchas
+## 5. Watch-duration presets
+
+The UI lets you pick one of five presets — for **non-custom** presets, every video watches a **random duration inside the selected range**, which looks more organic than a fixed number:
+
+| Preset | Range (seconds) |
+|---|---|
+| Short   | 30 – 60 |
+| Medium  | 90 – 180 |
+| Long    | 240 – 420 |
+| X-Long  | 460 – 800 |
+| Custom  | fixed value from the "Watch (custom)" input |
+
+Every 3 videos processed, the engine also rotates the Tor exit (and, if you chose "Specific list", picks a different country from your list).
+
+---
+
+## 6. Common gotchas
 
 | Problem | Fix |
 |---|---|
 | `stem.SocketError: [WinError 10061]` | Tor isn't listening on 9051. Start `tor.exe` first. |
 | `playwright: command not found` | Reactivate the venv: `.\.venv\Scripts\Activate.ps1` |
-| Browser launches then closes instantly | Run `playwright install-deps` (Linux only) or make sure Windows Defender isn't blocking `chrome.exe`. |
-| Tor keeps closing when PowerShell closes | Install as service via NSSM (see step 2). |
-| PostgREST 400 from Supabase | Ensure `SUPABASE_SERVICE_KEY` is the *service_role* key, not anon. |
+| Playwright launches then closes instantly | Windows Defender may be blocking `chrome-headless-shell.exe` — add an exception. |
+| Tor closes when PowerShell closes | Install as service via NSSM (see step 2). |
+| `db=error` on `/api/health` | Ensure the `SQLITE_PATH` directory exists (backend creates it, but if you set an unusual path make sure it's writable). |
+| Very slow first Tor request | Tor is bootstrapping (60–90 s the first time). Give it a minute. |
 
 ---
 
-## 6. Directory summary
+## 7. File layout
 
 ```
 socialmediabooster/
-├── backend/                # FastAPI + Tor rotation + Playwright
-│   ├── server.py
-│   ├── supabase_client.py
-│   ├── browser_runner.py
+├── backend/
+│   ├── server.py               # FastAPI + Tor rotation orchestration
+│   ├── local_storage.py        # aiosqlite adapter (drop-in for the ex-Supabase client)
+│   ├── browser_runner.py       # Playwright Chromium via SOCKS5
 │   ├── requirements.txt
-│   └── .env
-├── frontend/               # React SPA
+│   ├── .env
+│   └── data/yt_booster.db      # ← your local database (auto-created)
+├── frontend/
 │   ├── src/App.js
 │   ├── package.json
 │   └── .env
-├── supabase_schema.sql     # One-time DDL (auto-applied by backend on startup)
-├── WINDOWS_SETUP.md        # this file
+├── WINDOWS_SETUP.md            # this file
 └── README.md
 ```
 
-The backend automatically applies `supabase_schema.sql` at startup via Supabase pg-meta, so you don't need to run it manually. If you prefer to run it yourself, paste it into the Supabase Studio SQL editor.
+No `.git` credentials, no cloud creds — you can zip this folder and run it on any Windows PC with the same prereqs.

@@ -11,14 +11,14 @@ import re
 import random
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timezone, timedelta
 
 import requests
 from stem import Signal
 from stem.control import Controller
 
-from supabase_client import get_supabase
+from local_storage import get_store
 from browser_runner import visit_via_playwright
 
 ROOT_DIR = Path(__file__).parent
@@ -37,17 +37,33 @@ ROTATION_INTERVAL = int(os.environ.get("ROTATION_INTERVAL", "3"))
 BROWSER_MODE = os.environ.get("BROWSER_MODE", "playwright")  # 'playwright' | 'http'
 LOG_RETENTION_DAYS = int(os.environ.get("LOG_RETENTION_DAYS", "7"))
 
-sb = get_supabase()
+db = get_store()
+
+# ---------------- Duration presets ----------------
+
+DURATION_PRESETS: Dict[str, Tuple[int, int]] = {
+    "short":  (30, 60),
+    "medium": (90, 180),
+    "long":   (240, 420),
+    "xlong":  (460, 800),
+}
+
+def resolve_watch_seconds(preset: str, fallback: int) -> int:
+    rng = DURATION_PRESETS.get(preset)
+    if not rng:
+        return max(3, min(1200, fallback))
+    return random.randint(rng[0], rng[1])
 
 # ---------------- Models ----------------
 
 class JobCreate(BaseModel):
     video_urls: List[str]
     views_per_video: int = 3
-    watch_seconds: int = 8
-    location_mode: str = "random"  # random | specific | auto
+    watch_seconds: int = 8               # used only when duration_preset == 'custom'
+    duration_preset: str = "custom"      # 'short'|'medium'|'long'|'xlong'|'custom'
+    location_mode: str = "random"        # 'random' | 'specific' | 'auto'
     countries: List[str] = []
-    browser_mode: Optional[str] = None  # override server default: 'playwright' or 'http'
+    browser_mode: Optional[str] = None   # 'playwright' | 'http'
 
 class Job(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -55,6 +71,7 @@ class Job(BaseModel):
     video_urls: List[str]
     views_per_video: int
     watch_seconds: int
+    duration_preset: str = "custom"
     location_mode: str
     countries: List[str] = []
     status: str = "queued"
@@ -70,7 +87,7 @@ class Job(BaseModel):
     current_country: Optional[str] = None
     current_country_code: Optional[str] = None
 
-# ---------------- Broadcaster (in-memory + Supabase persistence) ----------------
+# ---------------- Broadcaster (in-memory + local DB persistence) ----------------
 
 class Broadcaster:
     def __init__(self):
@@ -93,7 +110,7 @@ class Broadcaster:
                 q.put_nowait(event)
             except Exception:
                 pass
-        # persist to Supabase (non-blocking)
+        # persist to local DB (best-effort)
         row = {
             "job_id": job_id,
             "level": event.get("level", "info"),
@@ -104,38 +121,54 @@ class Broadcaster:
             "ts": event["ts"],
         }
         try:
-            asyncio.create_task(sb.insert("yt_job_logs", row))
+            asyncio.create_task(db.insert("yt_job_logs", row))
         except Exception as e:
             logger.warning(f"log persist failed: {e}")
 
 broadcaster = Broadcaster()
 
-# ---------------- Tor helpers ----------------
+# ---------------- Tor helpers (no external deps needed) ----------------
 
 def tor_get_exit_ip() -> Optional[str]:
-    try:
-        r = requests.get("https://api.ipify.org?format=json",
-                         proxies={"http": TOR_SOCKS_HTTP, "https": TOR_SOCKS_HTTP}, timeout=25)
-        return r.json().get("ip")
-    except Exception as e:
-        logger.warning(f"exit ip fetch failed: {e}")
-        return None
+    """Fetch our current Tor exit IP. Tries multiple minimal services;
+    each returns just an IP string so this doesn't leak PII."""
+    endpoints = [
+        "https://api.ipify.org?format=json",
+        "https://icanhazip.com",
+        "https://ifconfig.me/ip",
+    ]
+    for url in endpoints:
+        try:
+            r = requests.get(url, proxies={"http": TOR_SOCKS_HTTP, "https": TOR_SOCKS_HTTP}, timeout=15)
+            if r.status_code != 200:
+                continue
+            text = r.text.strip()
+            try:
+                data = json.loads(text)
+                ip = data.get("ip")
+            except Exception:
+                ip = text.split()[0] if text else None
+            if ip and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
+                return ip
+        except Exception:
+            continue
+    return None
 
 def tor_ip_geo(ip: str) -> Dict[str, str]:
+    """Country/city lookup — uses Tor's built-in GeoIP database via the
+    control port (offline, no third-party call). City/region left empty."""
     try:
-        r = requests.get(f"http://ip-api.com/json/{ip}",
-                         params={"fields": "status,country,countryCode,region,city"}, timeout=10)
-        d = r.json()
-        if d.get("status") == "success":
-            return {
-                "country": d.get("country") or "Unknown",
-                "country_code": (d.get("countryCode") or "").upper(),
-                "city": d.get("city") or "",
-                "region": d.get("region") or "",
-            }
+        with Controller.from_port(port=TOR_CONTROL_PORT) as c:
+            c.authenticate()
+            cc = ""
+            try:
+                cc = (c.get_info(f"ip-to-country/{ip}") or "").upper()
+            except Exception:
+                cc = ""
+            country_name = _CC_TO_NAME.get(cc, cc or "Unknown")
+            return {"country": country_name, "country_code": cc, "city": "", "region": ""}
     except Exception:
-        pass
-    return {"country": "Unknown", "country_code": "", "city": "", "region": ""}
+        return {"country": "Unknown", "country_code": "", "city": "", "region": ""}
 
 def tor_rotate_circuit(exit_countries: Optional[List[str]] = None) -> None:
     with Controller.from_port(port=TOR_CONTROL_PORT) as c:
@@ -185,19 +218,20 @@ async def visit_via_http(video_url: str, watch_seconds: int) -> bool:
         except Exception:
             return False
     ok = await asyncio.to_thread(_do)
-    await asyncio.sleep(min(watch_seconds, 15))
+    await asyncio.sleep(min(watch_seconds, 60))
     return ok
 
 # ---------------- Job runner ----------------
 
 async def run_job(job_id: str, browser_mode: str):
-    job_doc = await sb.get_one("yt_jobs", {"id": job_id})
+    job_doc = await db.get_one("yt_jobs", {"id": job_id})
     if not job_doc:
         return
 
     urls = job_doc.get("video_urls", []) or []
     views_per_video = job_doc.get("views_per_video", 1)
-    watch_seconds = job_doc.get("watch_seconds", 5)
+    default_watch = job_doc.get("watch_seconds", 5)
+    duration_preset = job_doc.get("duration_preset", "custom")
     location_mode = job_doc.get("location_mode", "random")
     countries_cfg = job_doc.get("countries", []) or []
 
@@ -206,9 +240,16 @@ async def run_job(job_id: str, browser_mode: str):
     for u in urls:
         queue.extend([u] * views_per_video)
     total = len(queue)
-    await sb.update("yt_jobs", {"id": job_id}, {"status": "running", "total_videos": total})
+    await db.update("yt_jobs", {"id": job_id}, {"status": "running", "total_videos": total})
+
+    preset_hint = (
+        f"{DURATION_PRESETS[duration_preset][0]}–{DURATION_PRESETS[duration_preset][1]}s (random per video)"
+        if duration_preset in DURATION_PRESETS
+        else f"{default_watch}s fixed"
+    )
     await broadcaster.publish(job_id, {"level": "info",
-        "msg": f"Job started. total_videos={total}, rotate_every={ROTATION_INTERVAL}, browser_mode={browser_mode}"})
+        "msg": f"Job started. total_videos={total}, rotate_every={ROTATION_INTERVAL}, "
+               f"engine={browser_mode}, watch={preset_hint}"})
 
     unique_ips = set()
     countries_covered = set()
@@ -219,58 +260,47 @@ async def run_job(job_id: str, browser_mode: str):
     ip = None
     geo = {"country": "?", "country_code": ""}
 
-    # First circuit
+    async def rotate_and_probe(picked_countries: List[str], announce_prefix: str = ""):
+        nonlocal ip, geo
+        await broadcaster.publish(job_id, {"level": "tor",
+            "msg": f"{announce_prefix}rotating Tor circuit → exit country: {picked_countries}"})
+        try:
+            await asyncio.to_thread(tor_rotate_circuit, picked_countries)
+        except Exception as e:
+            await broadcaster.publish(job_id, {"level": "warn", "msg": f"circuit rotate failed: {e}"})
+        await asyncio.sleep(6)
+        ip = await asyncio.to_thread(tor_get_exit_ip)
+        if ip:
+            geo = await asyncio.to_thread(tor_ip_geo, ip)
+            unique_ips.add(ip)
+            countries_covered.add(geo["country_code"] or geo["country"])
+        await broadcaster.publish(job_id, {
+            "level": "ip",
+            "msg": f"Active exit IP: {ip} ({geo.get('country','?')})",
+            "ip": ip, "country": geo.get("country"), "country_code": geo.get("country_code"),
+        })
+
     picked = pick_countries_for_batch(location_mode, countries_cfg, batch_idx)
-    await broadcaster.publish(job_id, {"level": "tor", "msg": f"rotating Tor circuit → exit country: {picked}"})
-    try:
-        await asyncio.to_thread(tor_rotate_circuit, picked)
-    except Exception as e:
-        await broadcaster.publish(job_id, {"level": "warn", "msg": f"circuit rotate failed: {e}"})
-    await asyncio.sleep(6)
-    ip = await asyncio.to_thread(tor_get_exit_ip)
-    if ip:
-        geo = await asyncio.to_thread(tor_ip_geo, ip)
-        unique_ips.add(ip)
-        countries_covered.add(geo["country_code"] or geo["country"])
-    await broadcaster.publish(job_id, {
-        "level": "ip",
-        "msg": f"Active exit IP: {ip} ({geo.get('country','?')} {geo.get('city','')})",
-        "ip": ip, "country": geo.get("country"), "country_code": geo.get("country_code"),
-    })
+    await rotate_and_probe(picked)
 
     for i, url in enumerate(queue, start=1):
         if i > 1 and (i - 1) % ROTATION_INTERVAL == 0:
             batch_idx += 1
             picked = pick_countries_for_batch(location_mode, countries_cfg, batch_idx)
-            await broadcaster.publish(job_id, {"level": "tor",
-                "msg": f"[rotation] video #{i} → new circuit, exit: {picked}"})
-            try:
-                await asyncio.to_thread(tor_rotate_circuit, picked)
-            except Exception as e:
-                await broadcaster.publish(job_id, {"level": "warn", "msg": f"rotate error: {e}"})
-            await asyncio.sleep(6)
-            ip = await asyncio.to_thread(tor_get_exit_ip)
-            if ip:
-                geo = await asyncio.to_thread(tor_ip_geo, ip)
-                unique_ips.add(ip)
-                countries_covered.add(geo["country_code"] or geo["country"])
-            await broadcaster.publish(job_id, {
-                "level": "ip",
-                "msg": f"Active exit IP: {ip} ({geo.get('country','?')} {geo.get('city','')})",
-                "ip": ip, "country": geo.get("country"), "country_code": geo.get("country_code"),
-            })
+            await rotate_and_probe(picked, announce_prefix=f"[rotation @ video #{i}] ")
 
         vid = extract_video_id(url) or url
         next_rot = ROTATION_INTERVAL - ((i - 1) % ROTATION_INTERVAL) - 1
+        this_watch = resolve_watch_seconds(duration_preset, default_watch)
         engine = "playwright" if browser_mode == "playwright" else "http"
         await broadcaster.publish(job_id, {"level": "play",
-            "msg": f"[{i}/{total}] [{engine}] visiting {vid} via {ip}  |  next rotation in {next_rot} video(s)"})
+            "msg": f"[{i}/{total}] [{engine}] visiting {vid} via {ip} for {this_watch}s  |  next rotation in {next_rot} video(s)"})
 
         try:
             if browser_mode == "playwright":
-                ok = await visit_via_playwright(url, watch_seconds, socks=TOR_SOCKS_BROWSER)
+                ok = await visit_via_playwright(url, this_watch, socks=TOR_SOCKS_BROWSER)
             else:
-                ok = await visit_via_http(url, watch_seconds)
+                ok = await visit_via_http(url, this_watch)
         except Exception as e:
             await broadcaster.publish(job_id, {"level": "error", "msg": f"visit error: {e}"})
             ok = False
@@ -279,13 +309,13 @@ async def run_job(job_id: str, browser_mode: str):
         if ok:
             delivered += 1
             await broadcaster.publish(job_id, {"level": "ok",
-                "msg": f"[{i}/{total}] view delivered ✓  (total delivered: {delivered})"})
+                "msg": f"[{i}/{total}] view delivered ✓ ({this_watch}s watched, total: {delivered})"})
         else:
             failures += 1
             await broadcaster.publish(job_id, {"level": "error",
                 "msg": f"[{i}/{total}] view failed ✗"})
 
-        await sb.update("yt_jobs", {"id": job_id}, {
+        await db.update("yt_jobs", {"id": job_id}, {
             "processed_videos": processed,
             "total_views_delivered": delivered,
             "unique_ips": list(unique_ips),
@@ -296,7 +326,7 @@ async def run_job(job_id: str, browser_mode: str):
             "current_country_code": geo.get("country_code"),
         })
 
-    await sb.update("yt_jobs", {"id": job_id}, {
+    await db.update("yt_jobs", {"id": job_id}, {
         "status": "completed",
         "completed_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -309,11 +339,11 @@ async def log_retention_loop():
     while True:
         try:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=LOG_RETENTION_DAYS)).isoformat()
-            await sb.raw_delete("yt_job_logs", f"ts=lt.{cutoff}")
+            await db.raw_delete("yt_job_logs", f"ts=lt.{cutoff}")
             logger.info(f"purged logs older than {cutoff}")
         except Exception as e:
             logger.warning(f"log purge failed: {e}")
-        await asyncio.sleep(6 * 3600)  # every 6h
+        await asyncio.sleep(6 * 3600)
 
 # ---------------- API endpoints ----------------
 
@@ -323,13 +353,14 @@ async def root():
         "message": "YT Views Booster API",
         "rotation_interval": ROTATION_INTERVAL,
         "browser_mode": BROWSER_MODE,
-        "storage": "supabase",
+        "storage": "sqlite",
+        "duration_presets": {k: list(v) for k, v in DURATION_PRESETS.items()},
     }
 
 @api_router.get("/health")
 async def health():
-    ok = await sb.health()
-    return {"api": "ok", "supabase": "ok" if ok else "error"}
+    ok = await db.health()
+    return {"api": "ok", "db": "ok" if ok else "error", "storage": "sqlite"}
 
 @api_router.get("/tor/status")
 async def tor_status():
@@ -353,15 +384,17 @@ async def create_job(payload: JobCreate):
     urls = [u.strip() for u in (payload.video_urls or []) if u.strip()]
     if not urls:
         raise HTTPException(400, "video_urls required")
+    if payload.duration_preset not in ("custom", *DURATION_PRESETS.keys()):
+        raise HTTPException(400, f"invalid duration_preset (allowed: custom, {', '.join(DURATION_PRESETS)})")
     job = Job(
         video_urls=urls,
         views_per_video=max(1, min(50, payload.views_per_video)),
-        watch_seconds=max(3, min(60, payload.watch_seconds)),
+        watch_seconds=max(3, min(1200, payload.watch_seconds)),
+        duration_preset=payload.duration_preset,
         location_mode=payload.location_mode,
         countries=[c.strip().lower() for c in (payload.countries or []) if c.strip()],
     )
-    row = job.model_dump()
-    await sb.insert("yt_jobs", row)
+    await db.insert("yt_jobs", job.model_dump())
     bm = (payload.browser_mode or BROWSER_MODE).lower()
     if bm not in ("playwright", "http"):
         bm = BROWSER_MODE
@@ -370,19 +403,19 @@ async def create_job(payload: JobCreate):
 
 @api_router.get("/jobs", response_model=List[Job])
 async def list_jobs():
-    rows = await sb.select("yt_jobs", order="created_at.desc", limit=200)
+    rows = await db.select("yt_jobs", order="created_at.desc", limit=200)
     return [Job(**r) for r in rows]
 
 @api_router.get("/jobs/{job_id}")
 async def get_job(job_id: str):
-    row = await sb.get_one("yt_jobs", {"id": job_id})
+    row = await db.get_one("yt_jobs", {"id": job_id})
     if not row:
         raise HTTPException(404, "Job not found")
     return row
 
 @api_router.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str, limit: int = 500):
-    rows = await sb.select("yt_job_logs", match={"job_id": job_id}, order="ts.asc", limit=limit)
+    rows = await db.select("yt_job_logs", match={"job_id": job_id}, order="ts.asc", limit=limit)
     return {"job_id": job_id, "logs": rows}
 
 @api_router.get("/jobs/{job_id}/stream")
@@ -392,7 +425,7 @@ async def stream_job(job_id: str):
         try:
             # replay persisted history first
             try:
-                history = await sb.select("yt_job_logs", match={"job_id": job_id},
+                history = await db.select("yt_job_logs", match={"job_id": job_id},
                                           order="ts.asc", limit=500)
                 for h in history:
                     yield f"data: {json.dumps(h)}\n\n"
@@ -412,7 +445,7 @@ async def stream_job(job_id: str):
 
 @api_router.get("/stats")
 async def stats():
-    rows = await sb.select("yt_jobs", columns="total_views_delivered,unique_ips,countries_covered")
+    rows = await db.select("yt_jobs", columns="total_views_delivered,unique_ips,countries_covered")
     total_views = sum(r.get("total_views_delivered", 0) for r in rows)
     unique_ips = set()
     countries = set()
@@ -428,28 +461,30 @@ async def stats():
 
 @api_router.get("/countries")
 async def countries():
-    return {
-        "list": [
-            {"code": "us", "name": "United States"},
-            {"code": "gb", "name": "United Kingdom"},
-            {"code": "de", "name": "Germany"},
-            {"code": "fr", "name": "France"},
-            {"code": "nl", "name": "Netherlands"},
-            {"code": "se", "name": "Sweden"},
-            {"code": "ch", "name": "Switzerland"},
-            {"code": "ca", "name": "Canada"},
-            {"code": "in", "name": "India"},
-            {"code": "jp", "name": "Japan"},
-            {"code": "au", "name": "Australia"},
-            {"code": "br", "name": "Brazil"},
-            {"code": "es", "name": "Spain"},
-            {"code": "it", "name": "Italy"},
-            {"code": "pl", "name": "Poland"},
-            {"code": "ro", "name": "Romania"},
-            {"code": "no", "name": "Norway"},
-            {"code": "id", "name": "Indonesia"},
-        ]
-    }
+    return {"list": [{"code": k, "name": v} for k, v in _CC_TO_NAME.items() if k in [c.upper() for c in RANDOM_POOL] + ["ID"]]}
+
+# ---------------- ISO 3166-1 alpha-2 → country name (minimal offline map) ----------------
+_CC_TO_NAME: Dict[str, str] = {
+    "US": "United States", "GB": "United Kingdom", "DE": "Germany", "FR": "France",
+    "NL": "Netherlands", "SE": "Sweden", "CH": "Switzerland", "CA": "Canada",
+    "IN": "India", "JP": "Japan", "AU": "Australia", "BR": "Brazil",
+    "ES": "Spain", "IT": "Italy", "PL": "Poland", "RO": "Romania",
+    "NO": "Norway", "ID": "Indonesia", "AT": "Austria", "BE": "Belgium",
+    "CZ": "Czechia", "DK": "Denmark", "FI": "Finland", "IE": "Ireland",
+    "LU": "Luxembourg", "PT": "Portugal", "RU": "Russia", "SG": "Singapore",
+    "UA": "Ukraine", "TR": "Türkiye", "MX": "Mexico", "AR": "Argentina",
+    "ZA": "South Africa", "KR": "South Korea", "HK": "Hong Kong", "TW": "Taiwan",
+    "BG": "Bulgaria", "HU": "Hungary", "IS": "Iceland", "IL": "Israel",
+    "MY": "Malaysia", "NZ": "New Zealand", "PH": "Philippines", "TH": "Thailand",
+    "VN": "Vietnam", "GR": "Greece", "LV": "Latvia", "LT": "Lithuania",
+    "SK": "Slovakia", "SI": "Slovenia", "EE": "Estonia", "MD": "Moldova",
+    "MK": "North Macedonia", "RS": "Serbia", "HR": "Croatia", "AL": "Albania",
+    "BY": "Belarus", "CL": "Chile", "CO": "Colombia", "PE": "Peru",
+    "VE": "Venezuela", "UY": "Uruguay", "IR": "Iran", "IQ": "Iraq",
+    "SA": "Saudi Arabia", "AE": "United Arab Emirates", "EG": "Egypt", "KE": "Kenya",
+    "NG": "Nigeria", "MA": "Morocco", "TN": "Tunisia", "PK": "Pakistan",
+    "BD": "Bangladesh", "LK": "Sri Lanka", "NP": "Nepal", "KZ": "Kazakhstan",
+}
 
 app.include_router(api_router)
 app.add_middleware(
@@ -462,19 +497,13 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _startup():
-    # Auto-apply schema (idempotent) then reload PostgREST cache
     try:
-        schema_path = ROOT_DIR.parent / "supabase_schema.sql"
-        if schema_path.exists():
-            sql = schema_path.read_text()
-            await sb.execute_sql(sql)
-            await sb.refresh_schema_cache()
-            logger.info("supabase schema applied + cache reloaded")
+        await db.init_schema()
+        logger.info(f"SQLite schema initialised at {db.db_path}")
     except Exception as e:
-        logger.warning(f"schema apply failed (tables may already exist): {e}")
-    # Fire-and-forget background purger
+        logger.error(f"schema init failed: {e}")
     asyncio.create_task(log_retention_loop())
 
 @app.on_event("shutdown")
 async def _shutdown():
-    await sb.close()
+    await db.close()

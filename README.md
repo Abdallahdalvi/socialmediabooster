@@ -1,65 +1,82 @@
-# SocialMediaBooster — YT Views + Tor IP Rotation
+# SocialMediaBooster — YT Views + Tor IP Rotation (self-contained)
 
-Educational/research tool that simulates distributed YouTube traffic and rotates a fresh **Tor exit IP + country every 3 videos** to avoid single-IP fingerprinting. Real headless Chromium (Playwright) routed through Tor SOCKS5.
+Educational/research tool that simulates distributed YouTube traffic and rotates a fresh **Tor exit IP + country every 3 videos**. **Zero cloud dependencies** — SQLite on disk, Tor's built-in GeoIP database for country lookups, and headless Chromium (Playwright) routed through Tor SOCKS5.
 
 > ⚠️ **For testing and educational purposes only.** Automated view inflation violates YouTube's ToS.
 
-## Stack
+## What's inside
 
-- **Backend:** FastAPI + Playwright + Tor (via `stem`) + Supabase (PostgREST)
-- **Frontend:** React 19 + Tailwind + framer-motion (retro-terminal aesthetic)
-- **Storage:** Supabase Postgres (`yt_jobs`, `yt_job_logs`) — schema auto-applied on startup
-- **Traffic:** every 3 videos → `SIGNAL NEWNYM` on the Tor ControlPort + optional `ExitNodes` country pinning
+| Component | Local? | Notes |
+|---|---|---|
+| React frontend | ✅ | Vite/CRA on port 3000 |
+| FastAPI backend | ✅ | Port 8001 |
+| SQLite database | ✅ | Single file at `backend/data/yt_booster.db` |
+| Tor daemon | ✅ | SocksPort 9050, ControlPort 9051 (cookie auth) |
+| Playwright Chromium | ✅ | Real headless browser, SOCKS5 → Tor |
+| IP geolocation | ✅ | Tor's bundled GeoIP db (via ControlPort) — **no external API** |
+| Exit-IP verification | Public IP lookup (api.ipify.org / icanhazip.com fallbacks) via Tor |
 
 ## Highlights
 
-- **IP rotation every 3 videos** — verified live (US → DE → GB in one job)
-- **3 location strategies:** Random worldwide, Specific country list, Auto-match audience
-- **Real Chromium playback** via SOCKS5 to Tor — mouse movement, muted audio, randomized viewport/UA/timezone/locale
-- **Fast HTTP fallback** engine when you don't need a full browser
-- **Persistent SSE log stream** — logs stored in Supabase, replayed on reload, auto-purged after 7 days
-- **Force-Rotate-Now** manual control
+- **IP rotation every 3 videos** — `SIGNAL NEWNYM` + optional `ExitNodes` country pinning.
+- **Watch duration presets** — pick one, each video watches a *random* duration in the range:
+  - `short` — 30–60 s
+  - `medium` — 90–180 s
+  - `long` — 240–420 s
+  - `xlong` — 460–800 s
+  - `custom` — fixed value from the input
+- **3 location strategies:** Random worldwide, Specific country list, Auto-match audience.
+- **Two engines:** Playwright (real Chromium + mouse simulation) or fast HTTP fallback.
+- **Persistent SSE log stream** — logs stored in SQLite, replayed on reload, auto-purged after 7 days.
+- **Force-Rotate-Now** manual control.
+- **Runs offline-ish** — after `pip install` + `playwright install chromium`, no cloud services or paid APIs.
 
-## Quick start (Linux container / production)
+## Quick start — Linux (container / server)
 
-Backend, frontend, Tor, and MongoDB are managed by supervisor. Just:
+Backend, frontend, and Tor are managed by supervisor. Just:
 
 ```bash
-sudo supervisorctl restart backend frontend
+sudo supervisorctl restart backend frontend tor
 ```
 
-Then open the frontend at `REACT_APP_BACKEND_URL`.
+Open the frontend at `REACT_APP_BACKEND_URL` (see `frontend/.env`).
 
-## Quick start (Windows dev)
+## Quick start — Windows PC
 
-See [`WINDOWS_SETUP.md`](./WINDOWS_SETUP.md).
+See [`WINDOWS_SETUP.md`](./WINDOWS_SETUP.md). One-time steps:
 
-## Environment
+1. Install Python 3.11, Node 20, Yarn, Tor Expert Bundle.
+2. `python -m venv .venv && .venv\Scripts\Activate.ps1`
+3. `pip install -r backend\requirements.txt`
+4. `pip install stem aiosqlite pysocks "requests[socks]" playwright`
+5. `playwright install chromium`
+6. Start Tor: `C:\tor\tor\tor.exe -f C:\tor\torrc`
+7. Start backend: `uvicorn server:app --port 8001 --reload`
+8. In another shell: `cd frontend && yarn && yarn start`
 
-`backend/.env`:
+That's it — no Docker, no cloud DB, no API keys.
+
+## Environment (`backend/.env`)
 
 ```
 CORS_ORIGINS=*
-SUPABASE_URL=https://supabase.dalvi.cloud
-SUPABASE_SERVICE_KEY=<service_role key>
 BROWSER_MODE=playwright        # or 'http'
 TOR_SOCKS=socks5://127.0.0.1:9050
 TOR_CONTROL_PORT=9051
 ROTATION_INTERVAL=3
 LOG_RETENTION_DAYS=7
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=test_database
+SQLITE_PATH=./data/yt_booster.db
 ```
 
 ## API surface
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/` | Version + config |
-| `GET` | `/api/health` | Supabase reachability |
+| `GET` | `/api/` | Version + config + duration presets |
+| `GET` | `/api/health` | DB reachability |
 | `GET` | `/api/tor/status` | Current exit IP + country |
 | `POST` | `/api/tor/rotate` | Force new circuit (optional `countries` body) |
-| `POST` | `/api/jobs` | Enqueue a job |
+| `POST` | `/api/jobs` | Enqueue a job (accepts `duration_preset`) |
 | `GET` | `/api/jobs` | List (newest first) |
 | `GET` | `/api/jobs/{id}` | Full job doc |
 | `GET` | `/api/jobs/{id}/logs` | Persisted log lines |
@@ -69,10 +86,10 @@ DB_NAME=test_database
 
 ## Data model
 
-Auto-created in Supabase via `supabase_schema.sql` on backend startup.
+Auto-created on first backend startup — no manual SQL needed.
 
-- `yt_jobs (id uuid pk, video_urls jsonb, ...)` — one row per job
-- `yt_job_logs (id bigserial pk, job_id uuid fk, level, msg, ip, country, ts)` — one row per event
+- `yt_jobs (id TEXT PK, video_urls JSON, duration_preset, ...)`
+- `yt_job_logs (id INTEGER PK, job_id TEXT FK, level, msg, ip, country, ts)`
 
 ## License
 
